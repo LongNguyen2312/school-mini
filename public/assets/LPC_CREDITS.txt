@@ -1,0 +1,6 @@
+Player character sprites composed from Liberated Pixel Cup (LPC) / Universal LPC Spritesheet Character Generator.
+License: CC-BY-SA 3.0 / OGA-BY 3.0 / GPL 3.0 (see upstream CREDITS.csv).
+Authors include (non-exhaustive): bluecarrot16, ElizaWy, JaidynReiman, Johannes Sjölund (wulax), Stephen Challener (Redshrike), Matthew Krohn (makrohn), Benjamin K. Smith (BenCreating), and the Liberated Pixel Cup contributors.
+Source: https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator
+Custom: left-arm tattoo; smoking (cigarette in mouth) and standing kick (jump-leg graft) frames added for School Mini.
+Variants: player.png (hair + shades), player_bald.png (no hair/beard/shades).

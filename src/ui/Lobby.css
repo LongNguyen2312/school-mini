@@ -1,0 +1,223 @@
+.lobby {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(ellipse at 30% 20%, #3d6b45 0%, transparent 50%),
+    radial-gradient(ellipse at 70% 80%, #2a4a32 0%, transparent 45%),
+    #1a2e22;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  color: #f4f7f2;
+}
+
+.lobby-card {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 28px 24px;
+  background: rgba(12, 18, 14, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.lobby-title {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.lobby-sub {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  opacity: 0.75;
+  line-height: 1.4;
+}
+
+.lobby-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  opacity: 0.85;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lobby-input {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 1rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  outline: none;
+}
+
+.lobby-input:focus {
+  border-color: #7cbc6e;
+}
+
+.lobby-input[aria-invalid='true'] {
+  border-color: #e07070;
+}
+
+.lobby-error {
+  margin: -4px 0 0;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  color: #ffd0d0;
+  background: rgba(160, 40, 40, 0.35);
+  border: 1px solid rgba(255, 120, 120, 0.35);
+  border-radius: 8px;
+}
+
+.lobby-busy {
+  margin: -4px 0 0;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  color: #d8ecd0;
+  background: rgba(60, 100, 50, 0.35);
+  border: 1px solid rgba(140, 200, 120, 0.3);
+  border-radius: 8px;
+}
+
+.lobby-card.is-busy {
+  opacity: 0.92;
+  pointer-events: none;
+}
+
+.lobby-card.is-busy .lobby-join {
+  pointer-events: none;
+}
+
+.lobby-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lobby-swatch {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.lobby-swatch.is-on {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px #7cbc6e;
+}
+
+.lobby-choice {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.lobby-choice-btn {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  cursor: pointer;
+}
+
+.lobby-choice-btn.is-on {
+  border-color: #7cbc6e;
+  background: rgba(124, 188, 110, 0.18);
+}
+
+.lobby-choice-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.lobby-styles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: 8px;
+}
+
+.lobby-style {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.lobby-style.is-on {
+  border-color: #7cbc6e;
+  background: rgba(124, 188, 110, 0.15);
+}
+
+.lobby-style-preview {
+  width: 28px;
+  height: 36px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}
+
+.lobby-preview-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+.lobby-preview-stack {
+  width: 40px;
+  height: 52px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  display: flex;
+  flex-direction: column;
+}
+
+.lobby-preview-hair {
+  flex: 0 0 40%;
+  background: #222;
+}
+
+.lobby-preview-hair.is-bald {
+  background: #c48a5a;
+}
+
+.lobby-preview-shirt {
+  flex: 1;
+}
+
+.lobby-join {
+  margin-top: 8px;
+  border: none;
+  border-radius: 12px;
+  padding: 14px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  background: #7cbc6e;
+  color: #0f1a12;
+  cursor: pointer;
+}
+
+.lobby-join:hover {
+  filter: brightness(1.06);
+}

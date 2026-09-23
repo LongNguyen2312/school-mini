@@ -1,0 +1,3 @@
+Overworld grass texture:
+- Simple flat soft green fill (project-made, no external asset)
+- Local: public/assets/grass/grass_seamless.png
