@@ -19,6 +19,9 @@ export type PlayerPublic = {
   y: number
   facing: Facing
   anim: string
+  smoking: boolean
+  /** Spa bed number the player is lying on, 0 = none. */
+  bed: number
 }
 
 /** Slim move tick — no name/look (those only arrive on join/sync/zone). */
@@ -31,6 +34,7 @@ export type PlayerMove = {
   anim: string
   vx: number
   vy: number
+  smoking: boolean
 }
 
 export type ClientMsg =
@@ -58,8 +62,11 @@ export type ClientMsg =
       anim: string
       vx: number
       vy: number
+      smoking: boolean
     }
   | { type: 'chat'; text: string }
+  | { type: 'bed'; bed: number }
+  | { type: 'npcSay'; bed: number; line: number }
   | {
       type: 'hit'
       targetId: string
@@ -86,6 +93,11 @@ export type ServerMsg =
       dirY: number
       force: number
     }
+  /** Shared KTV BGM timeline — seek = (serverNow - startedAt). */
+  | { type: 'ktvSync'; startedAt: number; serverNow: number }
+  | { type: 'ktvStop' }
+  | { type: 'playerBed'; id: string; bed: number }
+  | { type: 'npcSay'; zone: string; bed: number; line: number }
 
 export const SHIRT_COLORS: { id: string; label: string; color: number }[] = [
   { id: 'white', label: 'Trắng', color: 0xffffff },
@@ -106,3 +118,6 @@ export function partyHost(): string {
 export function interiorZone(locationId: string) {
   return `interior:${locationId}`
 }
+
+export const KTV_ZONE = interiorZone('ktv-corner')
+

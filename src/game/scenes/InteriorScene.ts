@@ -1,7 +1,8 @@
 import Phaser from 'phaser'
 import { bindCameraZoom } from '../cameraZoom'
 import { SIT_RADIUS } from '../config'
-import { FEMALE_STAFF_IDS, getOrderLine } from '../data/orderLines'
+import { FEMALE_STAFF_IDS, getOrderLine, MASSAGE_LINES } from '../data/orderLines'
+import { KTV_TRACKS, KTV_VOLUME } from '../data/ktvPlaylist'
 import { PLAYER_BALD_SHEET, PLAYER_SHEET } from '../data/playerAnims'
 import { getLocationById, mapsUrl, type GameLocation } from '../data/locations'
 import { Npc } from '../entities/Npc'
@@ -16,6 +17,7 @@ import {
   type PlayerPublic,
 } from '../../multiplayer/types'
 import { ControlsHelp } from '../ui/ControlsHelp'
+import { KtvMuteButton } from '../ui/KtvMuteButton'
 import { makeChatBubble, showChatBubble, snapBubble } from '../ui/chatBubble'
 import { crispText, refreshCrispText } from '../ui/crispText'
 import { installHudCamera, registerHud } from '../ui/hudCamera'
@@ -36,6 +38,8 @@ interface Seat {
   /** 'lie' = massage bed; default sit */
   mode?: 'sit' | 'lie'
   therapist?: Npc
+  /** Spa bed number (1–10), shared across clients. */
+  bedNo?: number
 }
 
 /**
@@ -54,6 +58,12 @@ export class InteriorScene extends Phaser.Scene {
   private seatedSeat: Seat | null = null
   private wasSitting = false
   private orderOpen = false
+  private bedTherapists = new Map<number, { npc: Npc; x: number; y: number }>()
+  /** Remote player id → spa bed they're lying on. */
+  private remoteBeds = new Map<string, number>()
+  private localBed = 0
+  private massageChatTimer: Phaser.Time.TimerEvent | null = null
+  private lastMassageLine = -1
   private orderServing = false
   private prompt!: Phaser.GameObjects.Text
   private title!: Phaser.GameObjects.Text
@@ -80,9 +90,21 @@ export class InteriorScene extends Phaser.Scene {
   private lastNetX = 0
   private lastNetY = 0
   private lastNetAnim = ''
+  private lastNetSmoking = false
   private localName!: Phaser.GameObjects.Text
   private localBubble!: Phaser.GameObjects.Text
   private localBubbleUntil = 0
+  private ktvBgm: Phaser.Sound.BaseSound | null = null
+  private ktvTrackKeys: string[] = []
+  private ktvMuted = false
+  private ktvMuteBtn: KtvMuteButton | null = null
+  /** Shared session start (server epoch ms). */
+  private ktvStartedAt = 0
+  /** serverNow - Date.now() when last sync arrived. */
+  private ktvClockSkew = 0
+  private ktvAwaitingSync = false
+  private ktvFallbackTimer: Phaser.Time.TimerEvent | null = null
+  private ktvResyncTimer: Phaser.Time.TimerEvent | null = null
 
   constructor() {
     super('InteriorScene')
@@ -144,6 +166,16 @@ export class InteriorScene extends Phaser.Scene {
       if (!this.textures.exists(key)) {
         this.load.spritesheet(key, url, { frameWidth: 64, frameHeight: 64 })
       }
+    }
+
+    // KTV playlist — files listed in ktvPlaylist.ts
+    if (this.location.id === 'ktv-corner') {
+      KTV_TRACKS.forEach((file, i) => {
+        const key = `ktv-track-${i}`
+        if (!this.cache.audio.exists(key)) {
+          this.load.audio(key, `/assets/audio/${file}`)
+        }
+      })
     }
   }
 
@@ -211,6 +243,10 @@ export class InteriorScene extends Phaser.Scene {
     registerHud(this, this.controls.root)
     registerHud(this, this.prompt)
     registerHud(this, this.title)
+    if (this.location.id === 'ktv-corner') {
+      this.ktvMuteBtn = new KtvMuteButton(this, (muted) => this.setKtvMuted(muted))
+      registerHud(this, this.ktvMuteBtn.root)
+    }
     installHudCamera(this)
 
     this.layoutHud()
@@ -221,6 +257,7 @@ export class InteriorScene extends Phaser.Scene {
       this.showHomeGreeting()
     }
 
+    this.startKtvMusic()
     this.setupInteriorMultiplayer()
 
     this.scale.on('resize', () => {
@@ -252,6 +289,7 @@ export class InteriorScene extends Phaser.Scene {
 
     this.updateNearestSeat()
     this.updateSitService()
+    this.refreshMassage()
     this.updateSpeechFollow()
     this.updateLedLights(delta)
     this.updatePrompt()
@@ -318,11 +356,13 @@ export class InteriorScene extends Phaser.Scene {
     const w = this.scale.width
     this.controls.layout()
     pinToScreen(this, this.title, w / 2, 8)
+    this.ktvMuteBtn?.layout()
   }
 
   private clearNpcs() {
     for (const npc of this.npcs) npc.destroy()
     this.npcs = []
+    this.bedTherapists.clear()
   }
 
   private clearLeds() {
@@ -404,6 +444,7 @@ export class InteriorScene extends Phaser.Scene {
     this.player.actionFlush = () => {
       this.lastNetSent = 0
       this.lastNetAnim = ''
+      this.lastNetSmoking = false
     }
     this.player.sitInterceptor = () => this.trySitOrStand()
     this.player.setTargets(this.npcs)
@@ -662,7 +703,8 @@ export class InteriorScene extends Phaser.Scene {
     this.npcs.push(therapist)
 
     // Bed is a lie spot (not a chair)
-    this.addSeat(x, y + 8, 'up', { mode: 'lie', therapist })
+    this.addSeat(x, y + 8, 'up', { mode: 'lie', therapist, bedNo: index })
+    this.bedTherapists.set(index, { npc: therapist, x, y: y + 8 })
   }
 
   /** Home — one living-room set; player is the host (no NPC). */
@@ -797,6 +839,7 @@ export class InteriorScene extends Phaser.Scene {
     // Spa: therapist at this bed speaks immediately (no walk)
     if (seat.mode === 'lie' && seat.therapist) {
       this.showSpeech(line, { follow: seat.therapist.sprite })
+      this.startMassage(seat)
       return
     }
 
@@ -819,7 +862,61 @@ export class InteriorScene extends Phaser.Scene {
     })
   }
 
+  private startMassage(seat: Seat) {
+    if (!seat.bedNo) return
+    this.stopMassage()
+    this.localBed = seat.bedNo
+    this.mp?.sendBed(seat.bedNo)
+    this.refreshMassage()
+    this.scheduleMassageChat()
+  }
+
+  /** The lying player's client drives chatter for its bed and relays it. */
+  private scheduleMassageChat() {
+    this.massageChatTimer?.remove(false)
+    this.massageChatTimer = this.time.delayedCall(Phaser.Math.Between(7000, 12000), () => {
+      const bed = this.localBed
+      if (!bed || !this.player.isLying) return
+      let i = Phaser.Math.Between(0, MASSAGE_LINES.length - 1)
+      if (MASSAGE_LINES.length > 1 && i === this.lastMassageLine) {
+        i = (i + 1) % MASSAGE_LINES.length
+      }
+      this.lastMassageLine = i
+      this.bedTherapists.get(bed)?.npc.say(MASSAGE_LINES[i])
+      this.mp?.sendNpcSay(bed, i)
+      this.scheduleMassageChat()
+    })
+  }
+
+  private stopMassage() {
+    this.massageChatTimer?.remove(false)
+    this.massageChatTimer = null
+    if (this.localBed) {
+      this.localBed = 0
+      this.mp?.sendBed(0)
+    }
+    this.refreshMassage()
+  }
+
+  /** Therapists knead whenever anyone (local or remote) is on their bed. */
+  private refreshMassage() {
+    if (this.bedTherapists.size === 0) return
+    const occupied = new Set<number>()
+    if (this.localBed) occupied.add(this.localBed)
+    for (const [id, bed] of this.remoteBeds) {
+      if (bed && this.remotes.has(id)) occupied.add(bed)
+    }
+    for (const [bed, spot] of this.bedTherapists) {
+      if (occupied.has(bed)) {
+        if (!spot.npc.isMassaging) spot.npc.startMassage(spot.x, spot.y)
+      } else if (spot.npc.isMassaging) {
+        spot.npc.stopMassage()
+      }
+    }
+  }
+
   private onPlayerStood() {
+    this.stopMassage()
     this.hideOrder()
     this.orderServing = false
     this.seatedSeat = null
@@ -901,7 +998,7 @@ export class InteriorScene extends Phaser.Scene {
     x: number,
     y: number,
     facing: Seat['facing'],
-    opts?: { mode?: 'sit' | 'lie'; therapist?: Npc },
+    opts?: { mode?: 'sit' | 'lie'; therapist?: Npc; bedNo?: number },
   ) {
     const isLie = opts?.mode === 'lie'
     const marker = this.add
@@ -917,6 +1014,7 @@ export class InteriorScene extends Phaser.Scene {
       marker,
       mode: opts?.mode ?? 'sit',
       therapist: opts?.therapist,
+      bedNo: opts?.bedNo,
     })
   }
 
@@ -1035,6 +1133,8 @@ export class InteriorScene extends Phaser.Scene {
   }
 
   private returnToWorld() {
+    this.stopMassage()
+    this.stopKtvMusic()
     this.teardownInteriorMultiplayer()
     const payload = { spawnX: this.returnX, spawnY: this.returnY }
     this.scene.stop()
@@ -1042,6 +1142,173 @@ export class InteriorScene extends Phaser.Scene {
       this.scene.wake('WorldScene', payload)
     } else {
       this.scene.start('WorldScene', payload)
+    }
+  }
+
+  private startKtvMusic() {
+    if (this.location.id !== 'ktv-corner') return
+    this.ktvTrackKeys = KTV_TRACKS.map((_, i) => `ktv-track-${i}`).filter((key) =>
+      this.cache.audio.exists(key),
+    )
+    if (this.ktvTrackKeys.length === 0) return
+
+    // Online: wait for server timeline (first entrant starts it). Offline: play local.
+    this.mp = (this.registry.get('mp') as MultiplayerClient | undefined) ?? null
+    if (this.mp) {
+      this.ktvAwaitingSync = true
+      this.ktvFallbackTimer?.remove(false)
+      this.ktvFallbackTimer = this.time.delayedCall(2500, () => {
+        if (!this.ktvAwaitingSync) return
+        this.ktvAwaitingSync = false
+        const now = Date.now()
+        this.applyKtvSync(now, now)
+      })
+      return
+    }
+
+    const now = Date.now()
+    this.applyKtvSync(now, now)
+  }
+
+  private applyKtvSync(startedAt: number, serverNow: number) {
+    if (this.location.id !== 'ktv-corner') return
+    if (this.ktvTrackKeys.length === 0) {
+      this.ktvTrackKeys = KTV_TRACKS.map((_, i) => `ktv-track-${i}`).filter((key) =>
+        this.cache.audio.exists(key),
+      )
+    }
+    if (this.ktvTrackKeys.length === 0) return
+
+    this.ktvAwaitingSync = false
+    this.ktvFallbackTimer?.remove(false)
+    this.ktvFallbackTimer = null
+    this.ktvClockSkew = serverNow - Date.now()
+    this.ktvStartedAt = startedAt
+    this.sound.unlock()
+    this.restartKtvAtTimeline()
+    this.ensureKtvResyncTimer()
+  }
+
+  private ensureKtvResyncTimer() {
+    if (this.ktvResyncTimer) return
+    this.ktvResyncTimer = this.time.addEvent({
+      delay: 12000,
+      loop: true,
+      callback: () => this.correctKtvDrift(),
+    })
+  }
+
+  private ktvServerNow() {
+    return Date.now() + this.ktvClockSkew
+  }
+
+  private ktvVolume() {
+    return this.ktvMuted ? 0 : KTV_VOLUME
+  }
+
+  private setKtvMuted(muted: boolean) {
+    this.ktvMuted = muted
+    if (this.ktvBgm) this.setSoundVolume(this.ktvBgm, this.ktvVolume())
+  }
+
+  private setSoundVolume(sound: Phaser.Sound.BaseSound, volume: number) {
+    ;(sound as Phaser.Sound.WebAudioSound).volume = volume
+  }
+
+  private ktvDurationSec(): number {
+    if (this.ktvBgm) {
+      const d = this.ktvBgm.duration || this.ktvBgm.totalDuration || 0
+      if (d > 0) return d
+    }
+    const key = this.ktvTrackKeys[0]
+    if (!key) return 0
+    const cached = this.cache.audio.get(key) as { data?: { duration?: number } } | undefined
+    return cached?.data?.duration ?? 0
+  }
+
+  private ktvSeekSeconds(): number {
+    const dur = this.ktvDurationSec()
+    if (dur <= 0) return 0
+    const elapsed = Math.max(0, (this.ktvServerNow() - this.ktvStartedAt) / 1000)
+    return elapsed % dur
+  }
+
+  private restartKtvAtTimeline() {
+    if (this.ktvTrackKeys.length === 0) return
+    const key = this.ktvTrackKeys[0]!
+    const targetVol = this.ktvVolume()
+
+    this.ktvBgm?.stop()
+    this.ktvBgm?.destroy()
+    this.ktvBgm = this.sound.add(key, { loop: true, volume: targetVol })
+
+    // Duration is known after add for WebAudio
+    const seek = this.ktvSeekSeconds()
+    const begin = () => {
+      if (!this.ktvBgm) return
+      try {
+        this.ktvBgm.play({ seek, loop: true, volume: targetVol })
+      } catch {
+        this.input.once('pointerdown', () => {
+          this.sound.unlock()
+          this.ktvBgm?.play({
+            seek: this.ktvSeekSeconds(),
+            loop: true,
+            volume: this.ktvVolume(),
+          })
+        })
+      }
+    }
+    begin()
+    // Duration may resolve a tick late — snap seek once known
+    this.time.delayedCall(120, () => this.correctKtvDrift())
+    this.time.delayedCall(600, () => this.correctKtvDrift())
+  }
+
+  private correctKtvDrift() {
+    if (!this.ktvBgm || !this.ktvStartedAt) return
+    const dur = this.ktvDurationSec()
+    if (dur <= 0) return
+    const web = this.ktvBgm as Phaser.Sound.WebAudioSound
+    if (typeof web.seek !== 'number') return
+    const expected = this.ktvSeekSeconds()
+    if (Math.abs(expected - web.seek) > 0.85) {
+      web.seek = expected
+    }
+  }
+
+  private stopKtvMusic() {
+    this.ktvAwaitingSync = false
+    this.ktvFallbackTimer?.remove(false)
+    this.ktvFallbackTimer = null
+    this.ktvResyncTimer?.remove(false)
+    this.ktvResyncTimer = null
+    this.ktvStartedAt = 0
+
+    if (this.ktvBgm) {
+      this.ktvBgm.stop()
+      this.ktvBgm.destroy()
+      this.ktvBgm = null
+    }
+    this.ktvTrackKeys = []
+
+    this.ktvMuteBtn?.destroy()
+    this.ktvMuteBtn = null
+    this.ktvMuted = false
+  }
+
+  /** Stop playback only (stay in KTV UI) — last person left / server stop. */
+  private stopKtvPlayback() {
+    this.ktvAwaitingSync = false
+    this.ktvFallbackTimer?.remove(false)
+    this.ktvFallbackTimer = null
+    this.ktvResyncTimer?.remove(false)
+    this.ktvResyncTimer = null
+    this.ktvStartedAt = 0
+    if (this.ktvBgm) {
+      this.ktvBgm.stop()
+      this.ktvBgm.destroy()
+      this.ktvBgm = null
     }
   }
 
@@ -1131,9 +1398,27 @@ export class InteriorScene extends Phaser.Scene {
           this.player.applyKnockback(dirX, dirY, force)
           this.lastNetSent = 0
           this.lastNetAnim = ''
+      this.lastNetSmoking = false
           return
         }
         this.remotes.get(targetId)?.applyKnockback(dirX, dirY, force)
+      },
+      onKtvSync: (startedAt, serverNow) => {
+        if (this.location.id !== 'ktv-corner') return
+        this.applyKtvSync(startedAt, serverNow)
+      },
+      onKtvStop: () => {
+        if (this.location.id !== 'ktv-corner') return
+        this.stopKtvPlayback()
+      },
+      onPlayerBed: (id, bed) => {
+        if (bed) this.remoteBeds.set(id, bed)
+        else this.remoteBeds.delete(id)
+      },
+      onNpcSay: (zone, bed, line) => {
+        if (zone !== this.zone) return
+        const text = MASSAGE_LINES[line]
+        if (text) this.bedTherapists.get(bed)?.npc.say(text)
       },
     })
 
@@ -1161,10 +1446,13 @@ export class InteriorScene extends Phaser.Scene {
   private clearRemotes() {
     for (const r of this.remotes.values()) r.destroy()
     this.remotes.clear()
+    this.remoteBeds.clear()
   }
 
   private upsertRemote(p: PlayerPublic) {
     if (p.zone !== this.zone) return
+    if (p.bed) this.remoteBeds.set(p.id, p.bed)
+    else this.remoteBeds.delete(p.id)
     const existing = this.remotes.get(p.id)
     if (existing) {
       existing.applyFull(p)
@@ -1224,12 +1512,14 @@ export class InteriorScene extends Phaser.Scene {
     const y = this.player.sprite.y
     const anim = this.player.getNetAnim()
     const facing = this.player.getFacing()
+    const smoking = this.player.isSmoking
     const dx = x - this.lastNetX
     const dy = y - this.lastNetY
     const distSq = dx * dx + dy * dy
     const animChanged = anim !== this.lastNetAnim
-    if (distSq < 0.8 * 0.8 && !animChanged) return
-    const minGap = animChanged && distSq < 1 ? 16 : 30
+    const smokeChanged = smoking !== this.lastNetSmoking
+    if (distSq < 0.8 * 0.8 && !animChanged && !smokeChanged) return
+    const minGap = (animChanged || smokeChanged) && distSq < 1 ? 16 : 30
     if (time - this.lastNetSent < minGap) return
 
     let vx = 0
@@ -1253,6 +1543,7 @@ export class InteriorScene extends Phaser.Scene {
     this.lastNetX = x
     this.lastNetY = y
     this.lastNetAnim = anim
-    this.mp.sendMove(x, y, facing, anim, vx, vy)
+    this.lastNetSmoking = smoking
+    this.mp.sendMove(x, y, facing, anim, vx, vy, smoking)
   }
 }

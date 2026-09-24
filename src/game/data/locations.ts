@@ -90,7 +90,7 @@ export const LOCATIONS: GameLocation[] = [
   },
   {
     id: 'ktv-corner',
-    name: 'Quán Karaoke LED',
+    name: 'KTV',
     shortName: 'KTV',
     kind: 'ktv',
     lat: 10.75,

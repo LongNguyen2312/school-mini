@@ -2,6 +2,7 @@ import Phaser from 'phaser'
 import type { Hittable } from '../combat/types'
 import { PLAYER_SHEET } from '../data/playerAnims'
 import { crispText } from '../ui/crispText'
+import { makeChatBubble, showChatBubble, snapBubble } from '../ui/chatBubble'
 
 export type NpcRole = 'owner' | 'waiter' | 'dancer' | 'therapist' | 'dj' | 'bartender'
 
@@ -40,6 +41,11 @@ export class Npc implements Hittable {
   private readonly walkAnimKey: string
   private dancing = false
   private danceTweens: Phaser.Tweens.Tween[] = []
+  private massaging = false
+  private massageTweens: Phaser.Tweens.Tween[] = []
+  private massageHands: Phaser.GameObjects.Ellipse[] = []
+  private bubble: Phaser.GameObjects.Text | null = null
+  private bubbleUntil = 0
 
   constructor(
     scene: Phaser.Scene,
@@ -140,7 +146,82 @@ export class Npc implements Hittable {
     this.danceTweens.push(bob, sway)
   }
 
+  get isMassaging() {
+    return this.massaging
+  }
+
+  /** Short speech bubble above the head. */
+  say(text: string, durationMs = 3800) {
+    if (!this.bubble) {
+      this.bubble = makeChatBubble(this.scene, this.sprite.x, this.sprite.y - 40)
+    }
+    this.bubbleUntil = showChatBubble(this.bubble, text, durationMs)
+    snapBubble(this.bubble, this.sprite.x, this.sprite.y - 40)
+  }
+
+  /** Lean over the bed and knead the customer's back at (tx, ty). */
+  startMassage(tx: number, ty: number) {
+    if (this.massaging) return
+    this.stopDance()
+    this.massaging = true
+    this.target = null
+    this.onArrive = null
+    this.sprite.setVelocity(0, 0)
+    this.stopWalkAnim()
+    this.sprite.setPosition(this.homeX, this.homeY)
+
+    const leanX = this.homeX + Math.sign(tx - this.homeX) * 10
+    const lean = this.scene.tweens.add({
+      targets: this.sprite,
+      x: leanX,
+      duration: 260,
+      ease: 'Sine.easeOut',
+    })
+    const press = this.scene.tweens.add({
+      targets: this.sprite,
+      y: this.homeY + 3,
+      scaleY: this.sprite.scaleY * 0.95,
+      duration: 190,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    })
+    this.massageTweens.push(lean, press)
+
+    for (let i = 0; i < 2; i++) {
+      const hand = this.scene.add
+        .ellipse(tx + (i === 0 ? -7 : 7), ty - 6, 9, 7, 0xf1c9a5)
+        .setStrokeStyle(1, 0x8a5a3a)
+        .setDepth(12)
+      this.massageHands.push(hand)
+      const knead = this.scene.tweens.add({
+        targets: hand,
+        y: ty,
+        scaleX: 1.2,
+        scaleY: 0.8,
+        duration: 190,
+        yoyo: true,
+        repeat: -1,
+        delay: i * 190,
+        ease: 'Quad.easeIn',
+      })
+      this.massageTweens.push(knead)
+    }
+  }
+
+  stopMassage() {
+    if (!this.massaging) return
+    this.massaging = false
+    for (const t of this.massageTweens) t.stop()
+    this.massageTweens = []
+    for (const h of this.massageHands) h.destroy()
+    this.massageHands = []
+    this.sprite.setScale(PLAYER_SHEET.scale)
+    this.sprite.setPosition(this.homeX, this.homeY)
+  }
+
   goTo(x: number, y: number, onArrive?: () => void) {
+    this.stopMassage()
     this.stopDance()
     this.target = { x, y }
     this.onArrive = onArrive ?? null
@@ -153,6 +234,7 @@ export class Npc implements Hittable {
   applyKnockback(dirX: number, dirY: number, force: number) {
     this.target = null
     this.onArrive = null
+    this.stopMassage()
     this.stopDance()
     this.stopWalkAnim()
     const len = Math.hypot(dirX, dirY) || 1
@@ -164,11 +246,17 @@ export class Npc implements Hittable {
 
   update() {
     this.label.setPosition(this.sprite.x, this.sprite.y + 36)
+    if (this.bubble?.visible) {
+      snapBubble(this.bubble, this.sprite.x, this.sprite.y - 40)
+      if (performance.now() > this.bubbleUntil) this.bubble.setVisible(false)
+    }
 
     if (this.dancing) {
       this.playWalkAnim()
       return
     }
+
+    if (this.massaging) return
 
     if (this.scene.time.now < this.stunUntil) return
 
@@ -227,7 +315,10 @@ export class Npc implements Hittable {
   }
 
   destroy() {
+    this.stopMassage()
     this.stopDance()
+    this.bubble?.destroy()
+    this.bubble = null
     this.label.destroy()
     this.sprite.destroy()
   }

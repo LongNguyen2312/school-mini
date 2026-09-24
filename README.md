@@ -1,6 +1,6 @@
 # School Mini
 
-Phaser 4 top-down village overworld (Vite + React + TypeScript) with PartyKit multiplayer.
+Phaser 4 top-down village overworld (Vite + React + TypeScript) with multiplayer on Cloudflare [PartyServer](https://github.com/cloudflare/partykit/tree/main/packages/partyserver) (Durable Objects).
 
 ## Run (local multiplayer)
 
@@ -9,9 +9,12 @@ npm install
 npm run dev
 ```
 
-Opens Vite (web) + PartyKit (`127.0.0.1:1999`). Open the Vite URL in **two browser tabs** to test.
+Opens Vite (web) + `wrangler dev` (`127.0.0.1:1999`). Open the Vite URL in **two browser tabs** to test.
 
-Optional: `VITE_PARTYKIT_HOST=xxx.partykit.dev npm run dev:web` after `npm run deploy:party`.
+## Deploy
+
+1. Multiplayer server: `npx wrangler login`, then `npm run deploy:party` → prints `https://school-mini.<account>.workers.dev`.
+2. Web (Vercel): set env `VITE_PARTYKIT_HOST=school-mini.<account>.workers.dev` (no `https://`), then build/deploy.
 
 ## Features
 

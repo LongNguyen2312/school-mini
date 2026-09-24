@@ -13,6 +13,13 @@ export const ORDER_LINES: Record<string, string> = {
     'Thế là đủ rồi, không ăn nữa. Anh chỉ ăn từng này với một tí bún nữa là xong.',
 }
 
+/** Random small talk from the therapist while massaging. */
+export const MASSAGE_LINES = [
+  'Anh còn khó chịu chỗ nào không?',
+  'Anh có dùng thêm dịch vụ nào không?',
+  'Em có làm anh bị đau không?',
+]
+
 /** Locations where chủ + nhân viên are female. */
 export const FEMALE_STAFF_IDS = new Set(['ktv-corner', 'mat-xa-nguoi-mu'])
 

@@ -19,6 +19,10 @@ export type MultiplayerHandlers = {
   onHit: (targetId: string, dirX: number, dirY: number, force: number) => void
   onNameTaken?: (name: string) => void
   onStatus?: (text: string) => void
+  onKtvSync?: (startedAt: number, serverNow: number) => void
+  onKtvStop?: () => void
+  onPlayerBed?: (id: string, bed: number) => void
+  onNpcSay?: (zone: string, bed: number, line: number) => void
 }
 
 export class MultiplayerClient {
@@ -138,7 +142,34 @@ export class MultiplayerClient {
     }
     if (msg.type === 'hit') {
       this.handlers.onHit(msg.targetId, msg.dirX, msg.dirY, msg.force)
+      return
     }
+    if (msg.type === 'ktvSync') {
+      this.handlers.onKtvSync?.(msg.startedAt, msg.serverNow)
+      return
+    }
+    if (msg.type === 'ktvStop') {
+      this.handlers.onKtvStop?.()
+      return
+    }
+    if (msg.type === 'playerBed') {
+      if (msg.id === this.selfId) return
+      this.handlers.onPlayerBed?.(msg.id, msg.bed)
+      return
+    }
+    if (msg.type === 'npcSay') {
+      this.handlers.onNpcSay?.(msg.zone, msg.bed, msg.line)
+    }
+  }
+
+  sendBed(bed: number) {
+    if (!this.joined) return
+    this.send({ type: 'bed', bed })
+  }
+
+  sendNpcSay(bed: number, line: number) {
+    if (!this.joined) return
+    this.send({ type: 'npcSay', bed, line })
   }
 
   sendZone(zone: string, x: number, y: number) {
@@ -159,9 +190,10 @@ export class MultiplayerClient {
     anim: string,
     vx: number,
     vy: number,
+    smoking = false,
   ) {
     if (!this.joined) return
-    this.send({ type: 'move', x, y, facing, anim, vx, vy })
+    this.send({ type: 'move', x, y, facing, anim, vx, vy, smoking })
   }
 
   sendChat(text: string) {

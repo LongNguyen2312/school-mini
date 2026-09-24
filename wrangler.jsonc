@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "school-mini",
+  "main": "party/world.ts",
+  "compatibility_date": "2026-05-01",
+  "durable_objects": {
+    "bindings": [{ "name": "Main", "class_name": "WorldRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorldRoom"] }],
+  "dev": {
+    "ip": "127.0.0.1",
+    "port": 1999
+  }
+}

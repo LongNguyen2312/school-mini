@@ -16,6 +16,7 @@ import { animKeyFor, ensurePlayerLook } from '../appearance'
 import { facingVector, type Direction, type Hittable } from '../combat/types'
 import { PLAYER_FRAMES, PLAYER_SHEET } from '../data/playerAnims'
 import { ControlsHelp } from '../ui/ControlsHelp'
+import { KtvMuteButton } from '../ui/KtvMuteButton'
 import { Minimap } from '../ui/Minimap'
 
 export class Player implements Hittable {
@@ -34,6 +35,10 @@ export class Player implements Hittable {
   private sitting = false
   private lying = false
   private jumping = false
+  private dancing = false
+  private dancePhase = 0
+  private danceOffX = 0
+  private danceOffY = 0
   private attacking = false
   private punchSeq = 0
   private punchBuffered = false
@@ -83,7 +88,7 @@ export class Player implements Hittable {
     Player.createAnimations(scene)
 
     const keyboard = scene.input.keyboard!
-    keyboard.addCapture(['C', 'SPACE', 'W', 'A', 'S', 'D', 'Z', 'R', 'SHIFT'])
+    keyboard.addCapture(['C', 'SPACE', 'W', 'A', 'S', 'D', 'Z', 'R', 'Q', 'SHIFT'])
 
     this.cursors = keyboard.createCursorKeys()
     this.wasd = keyboard.addKeys({
@@ -98,6 +103,7 @@ export class Player implements Hittable {
     keyboard.on('keydown-SPACE', this.onJumpKey, this)
     keyboard.on('keydown-Z', this.onLieKey, this)
     keyboard.on('keydown-R', this.onSmokeKey, this)
+    keyboard.on('keydown-Q', this.onDanceKey, this)
 
     this.playIdle()
     this.bindCombatInput()
@@ -113,6 +119,7 @@ export class Player implements Hittable {
     keyboard?.off('keydown-SPACE', this.onJumpKey, this)
     keyboard?.off('keydown-Z', this.onLieKey, this)
     keyboard?.off('keydown-R', this.onSmokeKey, this)
+    keyboard?.off('keydown-Q', this.onDanceKey, this)
     this.scene.events.off('postupdate', this.afterPhysics, this)
     this.scene.input.off('pointerdown', this.onPointerDown)
     this.scene.input.off('pointermove', this.onPointerMove)
@@ -149,6 +156,11 @@ export class Player implements Hittable {
     this.smoke()
   }
 
+  private onDanceKey = (event?: KeyboardEvent) => {
+    if (!this.isSceneLive() || event?.repeat) return
+    this.toggleDance()
+  }
+
   static createAnimations(scene: Phaser.Scene) {
     const keys = [
       'player-idle-up',
@@ -175,6 +187,10 @@ export class Player implements Hittable {
       'player-jump-down',
       'player-jump-left',
       'player-jump-right',
+      'player-dance-up',
+      'player-dance-down',
+      'player-dance-left',
+      'player-dance-right',
       'player-lie',
       'player-smoke',
       'player-hit',
@@ -230,6 +246,12 @@ export class Player implements Hittable {
     mk('player-jump-left', PLAYER_FRAMES.jumpLeft, 12, 0)
     mk('player-jump-right', PLAYER_FRAMES.jumpRight, 12, 0)
 
+    // Dance reuses walk frames at a snappier rate
+    mk('player-dance-up', PLAYER_FRAMES.walkUp, 14, -1)
+    mk('player-dance-down', PLAYER_FRAMES.walkDown, 14, -1)
+    mk('player-dance-left', PLAYER_FRAMES.walkLeft, 14, -1)
+    mk('player-dance-right', PLAYER_FRAMES.walkRight, 14, -1)
+
     mk('player-lie', PLAYER_FRAMES.lie, 10, 0)
     mk('player-smoke', PLAYER_FRAMES.smoke, 5, 0)
     mk('player-hit', PLAYER_FRAMES.hit, 10, 0)
@@ -256,7 +278,11 @@ export class Player implements Hittable {
   }
 
   get isBusy() {
-    return this.sitting || this.lying || this.attacking || this.smoking || this.stunned
+    return this.sitting || this.lying || this.attacking || this.dancing || this.stunned
+  }
+
+  get isSmoking() {
+    return this.smoking
   }
 
   getFacing(): Direction {
@@ -267,9 +293,9 @@ export class Player implements Hittable {
   getNetAnim(): string {
     if (this.lying) return 'lie'
     if (this.sitting) return `sit-${this.facing}`
+    if (this.dancing) return `dance-${this.facing}`
     if (this.jumping) return `jump-${this.facing}`
     if (this.attacking) return `punch-${this.facing}`
-    if (this.smoking) return 'smoke'
     if (this.stunned || this.scene.time.now < this.knockUntil) return 'hit'
     // Do NOT use body.velocity — syncBodyToGround zeroes it every frame
     if (this.netMoving || this.isMovePressed() || this.moveTarget) {
@@ -346,7 +372,7 @@ export class Player implements Hittable {
 
   sitAt(x: number, y: number, facing: Direction = 'down') {
     if (this.jumping || this.attacking || this.stunned) return
-    this.stopSmoke()
+    this.stopDance()
     this.lying = false
     this.sitting = true
     this.jumping = false
@@ -387,7 +413,7 @@ export class Player implements Hittable {
 
   toggleSit() {
     if (this.jumping || this.attacking || this.stunned) return
-    this.stopSmoke()
+    this.stopDance()
     if (this.lying) {
       this.lying = false
       this.sprite.setAngle(0)
@@ -399,7 +425,7 @@ export class Player implements Hittable {
   /** Lie down at a world point (e.g. massage bed). */
   lieAt(x: number, y: number) {
     if (this.jumping || this.attacking || this.stunned) return
-    this.stopSmoke()
+    this.stopDance()
     this.sitting = false
     this.lying = true
     this.jumping = false
@@ -423,7 +449,6 @@ export class Player implements Hittable {
 
   toggleLie() {
     if (this.jumping || this.attacking || this.stunned) return
-    this.stopSmoke()
     if (this.sitting) this.sitting = false
     if (this.lying) {
       this.lying = false
@@ -434,20 +459,18 @@ export class Player implements Hittable {
     this.lieAt(this.gx, this.gy)
   }
 
+  /** Toggle cigarette overlay — can stay on while walking / dancing / etc. */
   smoke() {
-    if (this.isBusy || this.jumping || this.isMovePressed()) return
+    if (this.smoking) {
+      this.stopSmoke()
+      this.flushAction()
+      return
+    }
     this.smoking = true
     this.smokeStartedAt = this.scene.time.now
-    this.playIdle()
     this.ensureCigGfx()
     this.drawCigarette()
     this.flushAction()
-
-    this.scene.time.delayedCall(2200, () => {
-      if (!this.smoking) return
-      this.stopSmoke()
-      if (!this.sitting && !this.lying) this.playIdle()
-    })
   }
 
   /** Mouth anchor in frame pixels (origin = frame center 32,32), cig grows along `dir`. */
@@ -482,12 +505,11 @@ export class Player implements Hittable {
     this.cigGfx?.setVisible(false)
   }
 
-  /** Cancel smoke immediately (any other action). */
+  /** Turn cigarette off. */
   private stopSmoke() {
     if (!this.smoking) return
     this.smoking = false
     this.hideCigarette()
-    this.flushAction()
   }
 
   private drawCigarette() {
@@ -529,9 +551,9 @@ export class Player implements Hittable {
 
   takeHit() {
     if (this.stunned) return
+    this.stopDance()
     this.sitting = false
     this.lying = false
-    this.stopSmoke()
     this.attacking = false
     this.punchBuffered = false
     this.punchSeq++
@@ -551,9 +573,44 @@ export class Player implements Hittable {
     })
   }
 
+  toggleDance() {
+    if (this.dancing) {
+      this.stopDance()
+      this.playIdle()
+      this.flushAction()
+      return
+    }
+    if (this.sitting || this.lying || this.jumping || this.attacking || this.stunned) return
+    this.clearClickMove()
+    this.dancing = true
+    this.dancePhase = this.scene.time.now
+    this.danceOffX = 0
+    this.danceOffY = 0
+    this.sprite.setVelocity(0, 0)
+    this.sprite.setFlipX(false)
+    this.sprite.setScale(PLAYER_SHEET.scale)
+    this.playDance()
+    this.flushAction()
+  }
+
+  private stopDance() {
+    if (!this.dancing) return
+    this.dancing = false
+    this.danceOffX = 0
+    this.danceOffY = 0
+  }
+
+  private playDance() {
+    const key = this.dirKey('player-dance')
+    if (this.sprite.anims.currentAnim?.key === key && this.sprite.anims.isPlaying) return
+    this.sprite.setFlipX(false)
+    this.sprite.setScale(PLAYER_SHEET.scale)
+    this.sprite.anims.play(key, true)
+  }
+
   jump() {
     if (this.sitting || this.lying || this.jumping || this.attacking || this.stunned) return
-    this.stopSmoke()
+    this.stopDance()
     this.clearClickMove()
     this.jumping = true
     this.hop = 0
@@ -594,17 +651,6 @@ export class Player implements Hittable {
       return
     }
 
-    if (this.smoking) {
-      if (this.isMovePressed()) {
-        this.stopSmoke()
-      } else {
-        this.sprite.setVelocity(0, 0)
-        this.syncBodyToGround()
-        this.drawCigarette()
-        return
-      }
-    }
-
     if (this.sitting) {
       if (this.isMovePressed()) this.standUp()
       else {
@@ -624,6 +670,20 @@ export class Player implements Hittable {
       }
     }
 
+    if (this.dancing) {
+      if (this.isMovePressed() || this.moveTarget) {
+        this.stopDance()
+      } else {
+        this.sprite.setVelocity(0, 0)
+        const t = (this.scene.time.now - this.dancePhase) / 1000
+        this.danceOffY = Math.sin(t * Math.PI * 2 * 2.4) * 7
+        this.danceOffX = Math.sin(t * Math.PI * 2 * 1.5) * 9
+        this.playDance()
+        this.syncBodyToGround()
+        return
+      }
+    }
+
     const ox = this.gx
     const oy = this.gy
     this.moveOnGround(dt)
@@ -633,7 +693,8 @@ export class Player implements Hittable {
       Math.hypot(this.gx - ox, this.gy - oy) > 0.05 ||
       this.isMovePressed() ||
       !!this.moveTarget ||
-      this.jumping
+      this.jumping ||
+      this.dancing
 
     if (this.punchBuffered && this.scene.time.now >= this.attackReadyAt) {
       this.punchBuffered = false
@@ -644,7 +705,7 @@ export class Player implements Hittable {
   private afterPhysics = () => {
     if (!this.sprite.active) return
 
-    this.sprite.setPosition(this.gx, this.gy + this.hop)
+    this.sprite.setPosition(this.gx + this.danceOffX, this.gy + this.hop + this.danceOffY)
     const scale = PLAYER_SHEET.scale
     this.shadow.setPosition(this.gx, this.gy + 28 * scale)
 
@@ -659,6 +720,8 @@ export class Player implements Hittable {
       this.shadow.setScale(1)
       this.shadow.setAlpha(0.35)
     }
+
+    if (this.smoking) this.drawCigarette()
   }
 
   private syncBodyToGround() {
@@ -676,20 +739,20 @@ export class Player implements Hittable {
   }
 
   private onPointerDown = (pointer: Phaser.Input.Pointer) => {
-    if (ControlsHelp.blocksPointer(pointer) || Minimap.blocksPointer(pointer)) return
+    if (ControlsHelp.blocksPointer(pointer) || Minimap.blocksPointer(pointer) || KtvMuteButton.blocksPointer(pointer)) return
     if (pointer.leftButtonDown()) this.punch()
     if (pointer.rightButtonDown()) this.setClickMoveFromPointer(pointer, true)
   }
 
   private onPointerMove = (pointer: Phaser.Input.Pointer) => {
-    if (ControlsHelp.blocksPointer(pointer) || Minimap.blocksPointer(pointer)) return
+    if (ControlsHelp.blocksPointer(pointer) || Minimap.blocksPointer(pointer) || KtvMuteButton.blocksPointer(pointer)) return
     if (pointer.rightButtonDown()) this.setClickMoveFromPointer(pointer, false)
   }
 
   /** Walk to a world-space point (right-click move / minimap click). */
   moveToWorld(x: number, y: number, showMarker = true) {
     if (this.jumping || this.stunned) return
-    this.stopSmoke()
+    this.stopDance()
     if (this.sitting) this.standUp()
     if (this.lying) this.lying = false
 
@@ -755,7 +818,7 @@ export class Player implements Hittable {
       return
     }
 
-    this.stopSmoke()
+    this.stopDance()
     this.punchBuffered = false
     this.attackReadyAt = this.scene.time.now + ATTACK_COOLDOWN_MS
     this.attacking = true

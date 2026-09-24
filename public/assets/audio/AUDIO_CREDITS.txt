@@ -1,0 +1,10 @@
+KTV background music
+====================
+
+Playlist: src/game/data/ktvPlaylist.ts
+Audio: public/assets/audio/vinahouse3.mp3
+
+Playback is server-synced: first player in KTV starts the timeline;
+later players join at the same seek position; music stops when KTV is empty.
+
+Provided by project owner for this game.

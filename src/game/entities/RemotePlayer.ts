@@ -103,6 +103,7 @@ export class RemotePlayer implements Hittable {
       this.label.setText(data.name)
     }
     this.applyLook(data.bald, data.shirtColor)
+    this.setSmoking(Boolean(data.smoking))
     this.pushSnap(
       {
         id: data.id,
@@ -113,13 +114,26 @@ export class RemotePlayer implements Hittable {
         anim: data.anim,
         vx: 0,
         vy: 0,
+        smoking: Boolean(data.smoking),
       },
       instant,
     )
   }
 
   applyMove(move: PlayerMove) {
+    this.setSmoking(Boolean(move.smoking))
     this.pushSnap(move, false)
+  }
+
+  private setSmoking(on: boolean) {
+    if (on === this.smoking) return
+    this.smoking = on
+    if (on) {
+      this.smokeStartedAt = this.sprite.scene.time.now
+      this.drawCigarette()
+    } else {
+      this.hideCigarette()
+    }
   }
 
   private pushSnap(move: PlayerMove, instant: boolean) {
@@ -248,11 +262,9 @@ export class RemotePlayer implements Hittable {
   private playAnim(anim: string) {
     const suffix = anim.startsWith('player-') ? anim.slice(7) : anim
 
+    // Legacy: older clients sent anim === 'smoke'
     if (suffix === 'smoke') {
-      if (!this.smoking) {
-        this.smoking = true
-        this.smokeStartedAt = this.sprite.scene.time.now
-      }
+      this.setSmoking(true)
       const idleKey = animKeyFor(this.sheetKey, `idle-${this.facing}`)
       if (this.currentAnim !== idleKey || !this.sprite.anims.isPlaying) {
         this.currentAnim = idleKey
@@ -260,17 +272,11 @@ export class RemotePlayer implements Hittable {
           this.sprite.anims.play(idleKey, true)
         }
       }
-      this.drawCigarette()
       return
     }
 
-    if (this.smoking) {
-      this.smoking = false
-      this.hideCigarette()
-    }
-
     const key = animKeyFor(this.sheetKey, suffix)
-    const looping = /^(idle|walk|run)-/.test(suffix)
+    const looping = /^(idle|walk|run|dance)-/.test(suffix)
     if (key === this.currentAnim && this.sprite.anims.isPlaying && looping) return
     if (key === this.currentAnim && this.sprite.anims.isPlaying && !looping) return
     this.currentAnim = key

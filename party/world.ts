@@ -1,4 +1,8 @@
-import type * as Party from 'partykit/server'
+import { Server, routePartykitRequest, type Connection } from 'partyserver'
+
+type Env = {
+  Main: DurableObjectNamespace<WorldRoom>
+}
 
 export type Facing = 'up' | 'down' | 'left' | 'right'
 
@@ -14,6 +18,8 @@ export type PlayerPublic = {
   y: number
   facing: Facing
   anim: string
+  smoking: boolean
+  bed: number
 }
 
 type JoinMsg = {
@@ -47,6 +53,7 @@ type MoveMsg = {
   anim: string
   vx: number
   vy: number
+  smoking: boolean
 }
 
 type ChatMsg = {
@@ -62,7 +69,22 @@ type HitMsg = {
   force: number
 }
 
-type ClientMsg = JoinMsg | CheckNameMsg | ResyncMsg | ZoneMsg | MoveMsg | ChatMsg | HitMsg
+/** Spa bed the player is lying on (1–10), 0 = none. */
+type BedMsg = { type: 'bed'; bed: number }
+
+/** Therapist small talk, relayed to everyone in the same zone. */
+type NpcSayMsg = { type: 'npcSay'; bed: number; line: number }
+
+type ClientMsg =
+  | JoinMsg
+  | CheckNameMsg
+  | ResyncMsg
+  | ZoneMsg
+  | MoveMsg
+  | ChatMsg
+  | HitMsg
+  | BedMsg
+  | NpcSayMsg
 
 type PlayerMove = {
   id: string
@@ -73,6 +95,7 @@ type PlayerMove = {
   anim: string
   vx: number
   vy: number
+  smoking: boolean
 }
 
 type ServerMsg =
@@ -93,19 +116,22 @@ type ServerMsg =
       dirY: number
       force: number
     }
+  | { type: 'ktvSync'; startedAt: number; serverNow: number }
+  | { type: 'ktvStop' }
+  | { type: 'playerBed'; id: string; bed: number }
+  | { type: 'npcSay'; zone: string; bed: number; line: number }
 
 const MAX_CHAT = 80
+const MAX_BED = 20
+const MAX_NPC_LINE = 20
 const MAX_NAME = 16
 const MAX_HIT_FORCE = 400
 const MAX_SPEED = 420
 const MAX_ZONE = 48
+const KTV_ZONE = 'interior:ktv-corner'
 
-function send(conn: Party.Connection, msg: ServerMsg) {
+function send(conn: Connection, msg: ServerMsg) {
   conn.send(JSON.stringify(msg))
-}
-
-function broadcast(room: Party.Room, msg: ServerMsg, except?: string[]) {
-  room.broadcast(JSON.stringify(msg), except)
 }
 
 function clampVel(v: number) {
@@ -124,12 +150,16 @@ function sanitizeZone(raw: string) {
   return OVERWORLD_ZONE
 }
 
-export default class WorldRoom implements Party.Server {
+export class WorldRoom extends Server<Env> {
   players = new Map<string, PlayerPublic>()
+  /** Epoch ms when the current KTV session began; null when empty. */
+  private ktvStartedAt: number | null = null
 
-  constructor(readonly room: Party.Room) {}
+  private emit(msg: ServerMsg, except?: string[]) {
+    this.broadcast(JSON.stringify(msg), except)
+  }
 
-  onConnect(conn: Party.Connection) {
+  onConnect(conn: Connection) {
     send(conn, { type: 'hello', id: conn.id })
   }
 
@@ -142,7 +172,37 @@ export default class WorldRoom implements Party.Server {
     return false
   }
 
-  onMessage(raw: string | ArrayBuffer | ArrayBufferView, sender: Party.Connection) {
+  private countInZone(zone: string) {
+    let n = 0
+    for (const p of this.players.values()) {
+      if (p.zone === zone) n++
+    }
+    return n
+  }
+
+  /** Start / keep / stop shared KTV timeline; optionally push sync to one connection. */
+  private refreshKtv(syncTo?: Connection) {
+    const n = this.countInZone(KTV_ZONE)
+    if (n === 0) {
+      if (this.ktvStartedAt != null) {
+        this.ktvStartedAt = null
+        this.emit({ type: 'ktvStop' })
+      }
+      return
+    }
+    if (this.ktvStartedAt == null) {
+      this.ktvStartedAt = Date.now()
+    }
+    if (syncTo) {
+      send(syncTo, {
+        type: 'ktvSync',
+        startedAt: this.ktvStartedAt,
+        serverNow: Date.now(),
+      })
+    }
+  }
+
+  onMessage(sender: Connection, raw: string | ArrayBuffer | ArrayBufferView) {
     if (typeof raw !== 'string') return
     let msg: ClientMsg
     try {
@@ -167,10 +227,12 @@ export default class WorldRoom implements Party.Server {
         y: Number(msg.y) || 0,
         facing: 'down',
         anim: 'idle-down',
+        smoking: false,
+        bed: 0,
       }
       this.players.set(sender.id, player)
       send(sender, { type: 'sync', players: [...this.players.values()] })
-      broadcast(this.room, { type: 'playerJoined', player }, [sender.id])
+      this.emit({ type: 'playerJoined', player }, [sender.id])
       return
     }
 
@@ -193,11 +255,34 @@ export default class WorldRoom implements Party.Server {
     }
 
     if (msg.type === 'zone') {
+      const prevZone = me.zone
       me.zone = sanitizeZone(msg.zone)
       me.x = Number(msg.x) || me.x
       me.y = Number(msg.y) || me.y
       me.anim = me.zone === OVERWORLD_ZONE ? me.anim : 'idle-down'
-      broadcast(this.room, { type: 'playerZone', player: me }, [sender.id])
+      me.bed = 0
+      this.emit({ type: 'playerZone', player: me }, [sender.id])
+      if (me.zone === KTV_ZONE) {
+        this.refreshKtv(sender)
+      } else if (prevZone === KTV_ZONE) {
+        this.refreshKtv()
+      }
+      return
+    }
+
+    if (msg.type === 'bed') {
+      const bed = Math.trunc(Number(msg.bed) || 0)
+      me.bed = bed >= 1 && bed <= MAX_BED ? bed : 0
+      this.emit({ type: 'playerBed', id: me.id, bed: me.bed }, [sender.id])
+      return
+    }
+
+    if (msg.type === 'npcSay') {
+      const bed = Math.trunc(Number(msg.bed) || 0)
+      const line = Math.trunc(Number(msg.line))
+      if (bed !== me.bed || bed < 1) return
+      if (!(line >= 0 && line < MAX_NPC_LINE)) return
+      this.emit({ type: 'npcSay', zone: me.zone, bed, line }, [sender.id])
       return
     }
 
@@ -206,10 +291,10 @@ export default class WorldRoom implements Party.Server {
       me.y = Number(msg.y) || me.y
       me.facing = msg.facing || me.facing
       me.anim = String(msg.anim || me.anim).slice(0, 32)
+      me.smoking = Boolean(msg.smoking)
       const vx = clampVel(Number(msg.vx) || 0)
       const vy = clampVel(Number(msg.vy) || 0)
-      broadcast(
-        this.room,
+      this.emit(
         {
           type: 'playerMoved',
           move: {
@@ -221,6 +306,7 @@ export default class WorldRoom implements Party.Server {
             anim: me.anim,
             vx,
             vy,
+            smoking: me.smoking,
           },
         },
         [sender.id],
@@ -233,7 +319,7 @@ export default class WorldRoom implements Party.Server {
         .trim()
         .slice(0, MAX_CHAT)
       if (!text) return
-      broadcast(this.room, { type: 'chat', id: me.id, name: me.name, text })
+      this.emit({ type: 'chat', id: me.id, name: me.name, text })
       return
     }
 
@@ -251,8 +337,7 @@ export default class WorldRoom implements Party.Server {
       target.x += (dirX / len) * push
       target.y += (dirY / len) * push
       target.anim = 'hit'
-      broadcast(
-        this.room,
+      this.emit(
         {
           type: 'hit',
           fromId: sender.id,
@@ -266,11 +351,22 @@ export default class WorldRoom implements Party.Server {
     }
   }
 
-  onClose(conn: Party.Connection) {
-    if (!this.players.has(conn.id)) return
+  onClose(conn: Connection) {
+    const left = this.players.get(conn.id)
+    if (!left) return
     this.players.delete(conn.id)
-    broadcast(this.room, { type: 'playerLeft', id: conn.id })
+    this.emit({ type: 'playerLeft', id: conn.id })
+    if (left.zone === KTV_ZONE) {
+      this.refreshKtv()
+    }
   }
 }
 
-WorldRoom satisfies Party.Worker
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    return (
+      (await routePartykitRequest(request, env)) ??
+      new Response('school-mini multiplayer server', { status: 200 })
+    )
+  },
+} satisfies ExportedHandler<Env>

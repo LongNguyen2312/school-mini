@@ -1,6 +1,0 @@
-{
-  "$schema": "https://www.partykit.io/schema.json",
-  "name": "school-mini",
-  "main": "party/world.ts",
-  "compatibilityDate": "2024-11-12"
-}

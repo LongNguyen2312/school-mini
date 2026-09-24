@@ -53,6 +53,7 @@ export class WorldScene extends Phaser.Scene {
   private lastNetX = 0
   private lastNetY = 0
   private lastNetAnim = ''
+  private lastNetSmoking = false
 
   constructor() {
     super('WorldScene')
@@ -114,6 +115,7 @@ export class WorldScene extends Phaser.Scene {
     this.player.actionFlush = () => {
       this.lastNetSent = 0
       this.lastNetAnim = ''
+      this.lastNetSmoking = false
     }
     this.cameras.main.startFollow(this.player.sprite, false, 1, 1)
 
@@ -321,6 +323,7 @@ export class WorldScene extends Phaser.Scene {
           this.player.applyKnockback(dirX, dirY, force)
           this.lastNetSent = 0
           this.lastNetAnim = ''
+      this.lastNetSmoking = false
           return
         }
         this.remotes.get(targetId)?.applyKnockback(dirX, dirY, force)
@@ -406,13 +409,15 @@ export class WorldScene extends Phaser.Scene {
     const y = this.player.sprite.y
     const anim = this.player.getNetAnim()
     const facing = this.player.getFacing()
+    const smoking = this.player.isSmoking
     const dx = x - this.lastNetX
     const dy = y - this.lastNetY
     const distSq = dx * dx + dy * dy
     const animChanged = anim !== this.lastNetAnim
-    if (distSq < 0.8 * 0.8 && !animChanged) return
+    const smokeChanged = smoking !== this.lastNetSmoking
+    if (distSq < 0.8 * 0.8 && !animChanged && !smokeChanged) return
     // ~33 Hz khi đi; anim đổi gửi sớm
-    const minGap = animChanged && distSq < 1 ? 16 : 30
+    const minGap = (animChanged || smokeChanged) && distSq < 1 ? 16 : 30
     if (time - this.lastNetSent < minGap) return
 
     let vx = 0
@@ -436,7 +441,8 @@ export class WorldScene extends Phaser.Scene {
     this.lastNetX = x
     this.lastNetY = y
     this.lastNetAnim = anim
-    this.mp.sendMove(x, y, facing, anim, vx, vy)
+    this.lastNetSmoking = smoking
+    this.mp.sendMove(x, y, facing, anim, vx, vy, smoking)
   }
 
   private layoutHud() {
@@ -1187,6 +1193,7 @@ export class WorldScene extends Phaser.Scene {
       this.mp.requestSync()
       this.lastNetSent = 0
       this.lastNetAnim = ''
+      this.lastNetSmoking = false
     }
   }
 
