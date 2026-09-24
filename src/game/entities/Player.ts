@@ -18,6 +18,7 @@ import { PLAYER_FRAMES, PLAYER_SHEET } from '../data/playerAnims'
 import { ControlsHelp } from '../ui/ControlsHelp'
 import { KtvMuteButton } from '../ui/KtvMuteButton'
 import { Minimap } from '../ui/Minimap'
+import { TOUCH_ACTION_EVENT, TouchControls, type TouchAction } from '../ui/TouchControls'
 
 export class Player implements Hittable {
   readonly sprite: Phaser.Physics.Arcade.Sprite
@@ -104,6 +105,7 @@ export class Player implements Hittable {
     keyboard.on('keydown-Z', this.onLieKey, this)
     keyboard.on('keydown-R', this.onSmokeKey, this)
     keyboard.on('keydown-Q', this.onDanceKey, this)
+    scene.events.on(TOUCH_ACTION_EVENT, this.onTouchAction, this)
 
     this.playIdle()
     this.bindCombatInput()
@@ -120,6 +122,7 @@ export class Player implements Hittable {
     keyboard?.off('keydown-Z', this.onLieKey, this)
     keyboard?.off('keydown-R', this.onSmokeKey, this)
     keyboard?.off('keydown-Q', this.onDanceKey, this)
+    this.scene.events.off(TOUCH_ACTION_EVENT, this.onTouchAction, this)
     this.scene.events.off('postupdate', this.afterPhysics, this)
     this.scene.input.off('pointerdown', this.onPointerDown)
     this.scene.input.off('pointermove', this.onPointerMove)
@@ -159,6 +162,15 @@ export class Player implements Hittable {
   private onDanceKey = (event?: KeyboardEvent) => {
     if (!this.isSceneLive() || event?.repeat) return
     this.toggleDance()
+  }
+
+  private onTouchAction(action: TouchAction) {
+    if (action === 'punch') {
+      if (this.isSceneLive()) this.punch()
+    } else if (action === 'jump') this.onJumpKey()
+    else if (action === 'sit') this.onSitKey()
+    else if (action === 'dance') this.onDanceKey()
+    else if (action === 'smoke') this.onSmokeKey()
   }
 
   static createAnimations(scene: Phaser.Scene) {
@@ -738,14 +750,28 @@ export class Player implements Hittable {
     this.scene.input.mouse?.disableContextMenu()
   }
 
+  private pointerBlocked(pointer: Phaser.Input.Pointer) {
+    return (
+      ControlsHelp.blocksPointer(pointer) ||
+      Minimap.blocksPointer(pointer) ||
+      KtvMuteButton.blocksPointer(pointer) ||
+      TouchControls.blocksPointer(pointer)
+    )
+  }
+
   private onPointerDown = (pointer: Phaser.Input.Pointer) => {
-    if (ControlsHelp.blocksPointer(pointer) || Minimap.blocksPointer(pointer) || KtvMuteButton.blocksPointer(pointer)) return
+    if (this.pointerBlocked(pointer)) return
+    // Touch: tap the world to walk there (punch has its own button).
+    if (pointer.wasTouch) {
+      this.setClickMoveFromPointer(pointer, true)
+      return
+    }
     if (pointer.leftButtonDown()) this.punch()
     if (pointer.rightButtonDown()) this.setClickMoveFromPointer(pointer, true)
   }
 
   private onPointerMove = (pointer: Phaser.Input.Pointer) => {
-    if (ControlsHelp.blocksPointer(pointer) || Minimap.blocksPointer(pointer) || KtvMuteButton.blocksPointer(pointer)) return
+    if (pointer.wasTouch || this.pointerBlocked(pointer)) return
     if (pointer.rightButtonDown()) this.setClickMoveFromPointer(pointer, false)
   }
 
@@ -878,6 +904,16 @@ export class Player implements Hittable {
     if (this.cursors.up.isDown || this.wasd.up.isDown) vy -= 1
     if (this.cursors.down.isDown || this.wasd.down.isDown) vy += 1
 
+    let stickMag = 0
+    if (vx === 0 && vy === 0) {
+      const stick = TouchControls.vector(this.scene)
+      stickMag = Math.hypot(stick.x, stick.y)
+      if (stickMag > 0) {
+        vx = stick.x / stickMag
+        vy = stick.y / stickMag
+      }
+    }
+
     const keyboardMove = vx !== 0 || vy !== 0
     if (keyboardMove) this.clearClickMove()
 
@@ -895,13 +931,13 @@ export class Player implements Hittable {
       }
     }
 
-    if (vx !== 0 && vy !== 0 && keyboardMove) {
+    if (vx !== 0 && vy !== 0 && keyboardMove && stickMag === 0) {
       const inv = 1 / Math.SQRT2
       vx *= inv
       vy *= inv
     }
 
-    const running = this.shiftKey.isDown
+    const running = this.shiftKey.isDown || stickMag > 0.92
     const speed = running ? PLAYER_RUN_SPEED : PLAYER_SPEED
 
     this.gx += vx * speed * dt
@@ -999,7 +1035,9 @@ export class Player implements Hittable {
       this.wasd.left.isDown ||
       this.wasd.right.isDown ||
       this.wasd.up.isDown ||
-      this.wasd.down.isDown
+      this.wasd.down.isDown ||
+      TouchControls.vector(this.scene).x !== 0 ||
+      TouchControls.vector(this.scene).y !== 0
     )
   }
 }

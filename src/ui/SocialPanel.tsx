@@ -137,7 +137,12 @@ export function SocialPanel({ onSend, selfName }: Props) {
       )}
 
       {!composeOpen && (
-        <div className="chat-hint">Enter — Chat · Tab — Online</div>
+        <>
+          <div className="chat-hint">Enter — Chat · Tab — Online</div>
+          <button type="button" className="chat-open" onClick={() => setComposeOpen(true)}>
+            Chat
+          </button>
+        </>
       )}
 
       {composeOpen && (

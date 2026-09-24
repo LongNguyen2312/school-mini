@@ -3,6 +3,7 @@ import { MINIMAP_MARGIN, MINIMAP_SIZE, WORLD_HEIGHT, WORLD_WIDTH } from '../conf
 import { computeRoadLayout, type PlacedLocation } from '../data/geo'
 import { crispText } from './crispText'
 import { pinToScreen } from './pinToScreen'
+import { isTouchDevice } from './TouchControls'
 
 /** Same colors as WorldScene. */
 const PLAZA = 0xd4c4a8
@@ -39,6 +40,8 @@ export class Minimap {
   private readonly getFollowTarget: FollowTargetFn
   private screenX = 0
   private screenY = 0
+  /** Display scale — shrinks on small / touch screens. */
+  private k = 1
   private peeking = false
 
   constructor(
@@ -161,7 +164,7 @@ export class Minimap {
   private onPointerDown = (pointer: Phaser.Input.Pointer) => {
     if (!this.containsScreen(pointer.x, pointer.y)) return
 
-    if (pointer.rightButtonDown()) {
+    if (pointer.rightButtonDown() || pointer.wasTouch) {
       const world = this.screenToWorld(pointer.x, pointer.y)
       if (!world) return
       this.onNavigate(world.x, world.y)
@@ -215,17 +218,18 @@ export class Minimap {
   }
 
   private containsScreen(x: number, y: number) {
+    const shown = this.size * this.k
     return (
       x >= this.screenX &&
-      x < this.screenX + this.size &&
+      x < this.screenX + shown &&
       y >= this.screenY &&
-      y < this.screenY + this.size
+      y < this.screenY + shown
     )
   }
 
   private screenToWorld(screenX: number, screenY: number) {
-    const lx = screenX - this.screenX
-    const ly = screenY - this.screenY
+    const lx = (screenX - this.screenX) / this.k
+    const ly = (screenY - this.screenY) / this.k
     const p = this.pad
     const inner = this.inner()
     if (lx < p || ly < p || lx >= p + inner || ly >= p + inner) return null
@@ -238,8 +242,8 @@ export class Minimap {
 
   /** Peek drag — clamp to map so dragging past the edge still pans. */
   private screenToWorldClamped(screenX: number, screenY: number) {
-    const lx = screenX - this.screenX
-    const ly = screenY - this.screenY
+    const lx = (screenX - this.screenX) / this.k
+    const ly = (screenY - this.screenY) / this.k
     const p = this.pad
     const inner = this.inner()
     const cx = Phaser.Math.Clamp(lx, p, p + inner)
@@ -422,8 +426,17 @@ export class Minimap {
   }
 
   private layout() {
-    this.screenX = this.scene.scale.width - this.size - MINIMAP_MARGIN
-    this.screenY = this.scene.scale.height - this.size - MINIMAP_MARGIN
+    const w = this.scene.scale.width
+    const h = this.scene.scale.height
+    const touch = isTouchDevice()
+    const target = Math.min(w, h) * (touch ? 0.3 : 0.32)
+    this.k = Phaser.Math.Clamp(target / this.size, 0.45, 1)
+    const shown = this.size * this.k
+    const margin = touch ? 10 : MINIMAP_MARGIN
+    this.screenX = w - shown - margin
+    // Touch: top-right, so action buttons own the bottom-right corner.
+    this.screenY = touch ? margin : h - shown - margin
     pinToScreen(this.scene, this.root, this.screenX, this.screenY)
+    this.root.setScale(this.k)
   }
 }

@@ -20,6 +20,12 @@ import {
   type PlayerPublic,
 } from '../../multiplayer/types'
 import { Minimap } from '../ui/Minimap'
+import {
+  TOUCH_ACTION_EVENT,
+  TouchControls,
+  isTouchDevice,
+  type TouchAction,
+} from '../ui/TouchControls'
 import { ControlsHelp } from '../ui/ControlsHelp'
 import { crispText } from '../ui/crispText'
 import { makeChatBubble, showChatBubble, snapBubble } from '../ui/chatBubble'
@@ -42,6 +48,7 @@ export class WorldScene extends Phaser.Scene {
   private spawnX?: number
   private spawnY?: number
   private minimap!: Minimap
+  private touch: TouchControls | null = null
   private controls!: ControlsHelp
   private remotes = new Map<string, RemotePlayer>()
   private mp: MultiplayerClient | null = null
@@ -190,6 +197,13 @@ export class WorldScene extends Phaser.Scene {
     registerHud(this, this.minimap.root)
     registerHud(this, this.prompt)
     registerHud(this, this.status)
+    if (isTouchDevice()) {
+      this.touch = new TouchControls(this)
+      registerHud(this, this.touch.root)
+      this.events.on(TOUCH_ACTION_EVENT, (action: TouchAction) => {
+        if (action === 'interact' && this.nearestHub) this.interactWithHub(this.nearestHub)
+      })
+    }
     installHudCamera(this)
 
     this.layoutHud()
@@ -197,6 +211,7 @@ export class WorldScene extends Phaser.Scene {
     this.scale.on('resize', () => {
       this.layoutHud()
       this.minimap.relayout()
+      this.touch?.layout()
     })
 
     this.setupMultiplayer(start)

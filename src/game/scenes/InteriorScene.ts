@@ -18,6 +18,12 @@ import {
 } from '../../multiplayer/types'
 import { ControlsHelp } from '../ui/ControlsHelp'
 import { KtvMuteButton } from '../ui/KtvMuteButton'
+import {
+  TOUCH_ACTION_EVENT,
+  TouchControls,
+  isTouchDevice,
+  type TouchAction,
+} from '../ui/TouchControls'
 import { makeChatBubble, showChatBubble, snapBubble } from '../ui/chatBubble'
 import { crispText, refreshCrispText } from '../ui/crispText'
 import { installHudCamera, registerHud } from '../ui/hudCamera'
@@ -98,6 +104,7 @@ export class InteriorScene extends Phaser.Scene {
   private ktvTrackKeys: string[] = []
   private ktvMuted = false
   private ktvMuteBtn: KtvMuteButton | null = null
+  private touch: TouchControls | null = null
   /** Shared session start (server epoch ms). */
   private ktvStartedAt = 0
   /** serverNow - Date.now() when last sync arrived. */
@@ -170,13 +177,71 @@ export class InteriorScene extends Phaser.Scene {
 
     // KTV playlist — files listed in ktvPlaylist.ts
     if (this.location.id === 'ktv-corner') {
+      const pending: string[] = []
       KTV_TRACKS.forEach((file, i) => {
         const key = `ktv-track-${i}`
         if (!this.cache.audio.exists(key)) {
           this.load.audio(key, `/assets/audio/${file}`)
+          pending.push(key)
         }
       })
+      if (pending.length > 0) this.showKtvLoading(pending)
     }
+  }
+
+  /** Full-screen loading overlay while KTV music downloads + decodes. */
+  private showKtvLoading(audioKeys: string[]) {
+    const w = this.scale.width
+    const h = this.scale.height
+    const barW = Math.min(360, w * 0.7)
+    const barH = 14
+    const font = 'system-ui, -apple-system, "Segoe UI", sans-serif'
+
+    const bg = this.add.rectangle(0, 0, w, h, 0x0d0a14, 1).setOrigin(0)
+    const title = crispText(
+      this.add
+        .text(w / 2, h / 2 - 48, 'KTV', {
+          fontFamily: font,
+          fontSize: '28px',
+          color: '#ff4fd8',
+          stroke: '#1a1a2e',
+          strokeThickness: 5,
+        })
+        .setOrigin(0.5),
+    )
+    const label = crispText(
+      this.add
+        .text(w / 2, h / 2 + 30, 'Đang tải nhạc… 0%', {
+          fontFamily: font,
+          fontSize: '16px',
+          color: '#ffffff',
+        })
+        .setOrigin(0.5),
+    )
+    const track = this.add
+      .rectangle(w / 2 - barW / 2, h / 2, barW, barH, 0xffffff, 0.15)
+      .setOrigin(0, 0.5)
+    const fill = this.add
+      .rectangle(w / 2 - barW / 2, h / 2, 0, barH, 0xff4fd8, 1)
+      .setOrigin(0, 0.5)
+    const parts = [bg, title, label, track, fill]
+    parts.forEach((p) => p.setDepth(10000).setScrollFactor(0))
+
+    const bytes = new Map<string, number>(audioKeys.map((k) => [k, 0]))
+    const onFileProgress = (file: Phaser.Loader.File, pct: number) => {
+      if (!bytes.has(file.key)) return
+      bytes.set(file.key, pct)
+      let sum = 0
+      bytes.forEach((v) => (sum += v))
+      const p = sum / bytes.size
+      fill.width = barW * p
+      label.setText(p >= 1 ? 'Đang chuẩn bị nhạc…' : `Đang tải nhạc… ${Math.floor(p * 100)}%`)
+    }
+    this.load.on(Phaser.Loader.Events.FILE_PROGRESS, onFileProgress)
+    this.load.once(Phaser.Loader.Events.COMPLETE, () => {
+      this.load.off(Phaser.Loader.Events.FILE_PROGRESS, onFileProgress)
+      parts.forEach((p) => p.destroy())
+    })
   }
 
   create() {
@@ -246,6 +311,13 @@ export class InteriorScene extends Phaser.Scene {
     if (this.location.id === 'ktv-corner') {
       this.ktvMuteBtn = new KtvMuteButton(this, (muted) => this.setKtvMuted(muted))
       registerHud(this, this.ktvMuteBtn.root)
+    }
+    if (isTouchDevice()) {
+      this.touch = new TouchControls(this)
+      registerHud(this, this.touch.root)
+      this.events.on(TOUCH_ACTION_EVENT, (action: TouchAction) => {
+        if (action === 'interact') this.handleInteract()
+      })
     }
     installHudCamera(this)
 
@@ -357,6 +429,7 @@ export class InteriorScene extends Phaser.Scene {
     this.controls.layout()
     pinToScreen(this, this.title, w / 2, 8)
     this.ktvMuteBtn?.layout()
+    this.touch?.layout()
   }
 
   private clearNpcs() {
@@ -1152,6 +1225,11 @@ export class InteriorScene extends Phaser.Scene {
     )
     if (this.ktvTrackKeys.length === 0) return
 
+    // Keep music playing when the tab/window loses focus; resnap on return.
+    this.sound.pauseOnBlur = false
+    this.game.events.on(Phaser.Core.Events.FOCUS, this.onKtvRefocus, this)
+    this.game.events.on(Phaser.Core.Events.VISIBLE, this.onKtvRefocus, this)
+
     // Online: wait for server timeline (first entrant starts it). Offline: play local.
     this.mp = (this.registry.get('mp') as MultiplayerClient | undefined) ?? null
     if (this.mp) {
@@ -1277,7 +1355,16 @@ export class InteriorScene extends Phaser.Scene {
     }
   }
 
+  private onKtvRefocus() {
+    const ctx = (this.sound as Phaser.Sound.WebAudioSoundManager).context
+    if (ctx && ctx.state === 'suspended') void ctx.resume()
+    this.correctKtvDrift()
+  }
+
   private stopKtvMusic() {
+    this.sound.pauseOnBlur = true
+    this.game.events.off(Phaser.Core.Events.FOCUS, this.onKtvRefocus, this)
+    this.game.events.off(Phaser.Core.Events.VISIBLE, this.onKtvRefocus, this)
     this.ktvAwaitingSync = false
     this.ktvFallbackTimer?.remove(false)
     this.ktvFallbackTimer = null

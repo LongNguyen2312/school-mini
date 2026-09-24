@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { crispText } from './crispText'
 import { pinToScreen } from './pinToScreen'
+import { isTouchDevice } from './TouchControls'
 
 type HelpVariant = 'world' | 'interior'
 
@@ -117,12 +118,18 @@ export class ControlsHelp {
 
     this.drawPanel(HEADER_H)
 
+    this.layout()
+    // Keyboard shortcuts are meaningless on phones — on-screen buttons replace them.
+    if (isTouchDevice()) {
+      this.root.setVisible(false)
+      return
+    }
+
     scene.input.on('pointerdown', this.onPointerDown)
     scene.input.on('pointermove', this.onPointerMove)
     scene.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown)
 
     activePanels.add(this)
-    this.layout()
   }
 
   /** True when the pointer is over any open controls panel (blocks world clicks). */
