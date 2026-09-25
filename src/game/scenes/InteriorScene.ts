@@ -48,6 +48,27 @@ interface Seat {
   bedNo?: number
 }
 
+/** DOM events that count as a user gesture for unlocking media playback. */
+const KTV_GESTURE_EVENTS = ['pointerup', 'touchend', 'mousedown', 'keydown'] as const
+
+let ktvAudioEl: HTMLAudioElement | null = null
+
+/**
+ * Streamed <audio> rather than Phaser WebAudio: long tracks decoded to PCM
+ * exhaust memory on phones, and iOS mutes WebAudio when the silent switch is on.
+ * Reused across KTV visits so buffered data and iOS play permission carry over.
+ */
+function ktvAudioElement(src: string) {
+  if (!ktvAudioEl) {
+    ktvAudioEl = new Audio()
+    ktvAudioEl.loop = true
+    ktvAudioEl.preload = 'auto'
+    ktvAudioEl.volume = KTV_VOLUME
+  }
+  if (!ktvAudioEl.src.endsWith(src)) ktvAudioEl.src = src
+  return ktvAudioEl
+}
+
 /**
  * Full-viewport interior — sit at a table and the waiter runs over to take the order.
  */
@@ -100,8 +121,7 @@ export class InteriorScene extends Phaser.Scene {
   private localName!: Phaser.GameObjects.Text
   private localBubble!: Phaser.GameObjects.Text
   private localBubbleUntil = 0
-  private ktvBgm: Phaser.Sound.BaseSound | null = null
-  private ktvTrackKeys: string[] = []
+  private ktvAudio: HTMLAudioElement | null = null
   private ktvMuted = false
   private ktvMuteBtn: KtvMuteButton | null = null
   private touch: TouchControls | null = null
@@ -175,73 +195,6 @@ export class InteriorScene extends Phaser.Scene {
       }
     }
 
-    // KTV playlist — files listed in ktvPlaylist.ts
-    if (this.location.id === 'ktv-corner') {
-      const pending: string[] = []
-      KTV_TRACKS.forEach((file, i) => {
-        const key = `ktv-track-${i}`
-        if (!this.cache.audio.exists(key)) {
-          this.load.audio(key, `/assets/audio/${file}`)
-          pending.push(key)
-        }
-      })
-      if (pending.length > 0) this.showKtvLoading(pending)
-    }
-  }
-
-  /** Full-screen loading overlay while KTV music downloads + decodes. */
-  private showKtvLoading(audioKeys: string[]) {
-    const w = this.scale.width
-    const h = this.scale.height
-    const barW = Math.min(360, w * 0.7)
-    const barH = 14
-    const font = 'system-ui, -apple-system, "Segoe UI", sans-serif'
-
-    const bg = this.add.rectangle(0, 0, w, h, 0x0d0a14, 1).setOrigin(0)
-    const title = crispText(
-      this.add
-        .text(w / 2, h / 2 - 48, 'KTV', {
-          fontFamily: font,
-          fontSize: '28px',
-          color: '#ff4fd8',
-          stroke: '#1a1a2e',
-          strokeThickness: 5,
-        })
-        .setOrigin(0.5),
-    )
-    const label = crispText(
-      this.add
-        .text(w / 2, h / 2 + 30, 'Đang tải nhạc… 0%', {
-          fontFamily: font,
-          fontSize: '16px',
-          color: '#ffffff',
-        })
-        .setOrigin(0.5),
-    )
-    const track = this.add
-      .rectangle(w / 2 - barW / 2, h / 2, barW, barH, 0xffffff, 0.15)
-      .setOrigin(0, 0.5)
-    const fill = this.add
-      .rectangle(w / 2 - barW / 2, h / 2, 0, barH, 0xff4fd8, 1)
-      .setOrigin(0, 0.5)
-    const parts = [bg, title, label, track, fill]
-    parts.forEach((p) => p.setDepth(10000).setScrollFactor(0))
-
-    const bytes = new Map<string, number>(audioKeys.map((k) => [k, 0]))
-    const onFileProgress = (file: Phaser.Loader.File, pct: number) => {
-      if (!bytes.has(file.key)) return
-      bytes.set(file.key, pct)
-      let sum = 0
-      bytes.forEach((v) => (sum += v))
-      const p = sum / bytes.size
-      fill.width = barW * p
-      label.setText(p >= 1 ? 'Đang chuẩn bị nhạc…' : `Đang tải nhạc… ${Math.floor(p * 100)}%`)
-    }
-    this.load.on(Phaser.Loader.Events.FILE_PROGRESS, onFileProgress)
-    this.load.once(Phaser.Loader.Events.COMPLETE, () => {
-      this.load.off(Phaser.Loader.Events.FILE_PROGRESS, onFileProgress)
-      parts.forEach((p) => p.destroy())
-    })
   }
 
   create() {
@@ -1220,13 +1173,11 @@ export class InteriorScene extends Phaser.Scene {
 
   private startKtvMusic() {
     if (this.location.id !== 'ktv-corner') return
-    this.ktvTrackKeys = KTV_TRACKS.map((_, i) => `ktv-track-${i}`).filter((key) =>
-      this.cache.audio.exists(key),
-    )
-    if (this.ktvTrackKeys.length === 0) return
+    const file = KTV_TRACKS[0]
+    if (!file) return
+    this.ktvAudio = ktvAudioElement(`/assets/audio/${file}`)
+    this.ktvAudio.muted = this.ktvMuted
 
-    // Keep music playing when the tab/window loses focus; resnap on return.
-    this.sound.pauseOnBlur = false
     this.game.events.on(Phaser.Core.Events.FOCUS, this.onKtvRefocus, this)
     this.game.events.on(Phaser.Core.Events.VISIBLE, this.onKtvRefocus, this)
 
@@ -1249,21 +1200,14 @@ export class InteriorScene extends Phaser.Scene {
   }
 
   private applyKtvSync(startedAt: number, serverNow: number) {
-    if (this.location.id !== 'ktv-corner') return
-    if (this.ktvTrackKeys.length === 0) {
-      this.ktvTrackKeys = KTV_TRACKS.map((_, i) => `ktv-track-${i}`).filter((key) =>
-        this.cache.audio.exists(key),
-      )
-    }
-    if (this.ktvTrackKeys.length === 0) return
+    if (this.location.id !== 'ktv-corner' || !this.ktvAudio) return
 
     this.ktvAwaitingSync = false
     this.ktvFallbackTimer?.remove(false)
     this.ktvFallbackTimer = null
     this.ktvClockSkew = serverNow - Date.now()
     this.ktvStartedAt = startedAt
-    this.sound.unlock()
-    this.restartKtvAtTimeline()
+    this.playKtvAtTimeline()
     this.ensureKtvResyncTimer()
   }
 
@@ -1280,28 +1224,14 @@ export class InteriorScene extends Phaser.Scene {
     return Date.now() + this.ktvClockSkew
   }
 
-  private ktvVolume() {
-    return this.ktvMuted ? 0 : KTV_VOLUME
-  }
-
   private setKtvMuted(muted: boolean) {
     this.ktvMuted = muted
-    if (this.ktvBgm) this.setSoundVolume(this.ktvBgm, this.ktvVolume())
-  }
-
-  private setSoundVolume(sound: Phaser.Sound.BaseSound, volume: number) {
-    ;(sound as Phaser.Sound.WebAudioSound).volume = volume
+    if (this.ktvAudio) this.ktvAudio.muted = muted
   }
 
   private ktvDurationSec(): number {
-    if (this.ktvBgm) {
-      const d = this.ktvBgm.duration || this.ktvBgm.totalDuration || 0
-      if (d > 0) return d
-    }
-    const key = this.ktvTrackKeys[0]
-    if (!key) return 0
-    const cached = this.cache.audio.get(key) as { data?: { duration?: number } } | undefined
-    return cached?.data?.duration ?? 0
+    const d = this.ktvAudio?.duration ?? 0
+    return Number.isFinite(d) && d > 0 ? d : 0
   }
 
   private ktvSeekSeconds(): number {
@@ -1311,73 +1241,62 @@ export class InteriorScene extends Phaser.Scene {
     return elapsed % dur
   }
 
-  private restartKtvAtTimeline() {
-    if (this.ktvTrackKeys.length === 0) return
-    const key = this.ktvTrackKeys[0]!
-    const targetVol = this.ktvVolume()
-
-    this.ktvBgm?.stop()
-    this.ktvBgm?.destroy()
-    this.ktvBgm = this.sound.add(key, { loop: true, volume: targetVol })
-
-    // Duration is known after add for WebAudio
-    const seek = this.ktvSeekSeconds()
-    const begin = () => {
-      if (!this.ktvBgm) return
-      try {
-        this.ktvBgm.play({ seek, loop: true, volume: targetVol })
-      } catch {
-        this.input.once('pointerdown', () => {
-          this.sound.unlock()
-          this.ktvBgm?.play({
-            seek: this.ktvSeekSeconds(),
-            loop: true,
-            volume: this.ktvVolume(),
-          })
-        })
-      }
+  private playKtvAtTimeline() {
+    const audio = this.ktvAudio
+    if (!audio || !this.ktvStartedAt) return
+    if (this.ktvDurationSec() > 0) {
+      audio.currentTime = this.ktvSeekSeconds()
+    } else {
+      audio.addEventListener('loadedmetadata', this.onKtvMetadata, { once: true })
     }
-    begin()
-    // Duration may resolve a tick late — snap seek once known
-    this.time.delayedCall(120, () => this.correctKtvDrift())
-    this.time.delayedCall(600, () => this.correctKtvDrift())
+    // Mobile browsers reject play() outside a user gesture — retry on the next tap/key.
+    audio.play().catch((err: unknown) => {
+      if (err instanceof DOMException && err.name === 'NotAllowedError') this.waitForKtvGesture()
+    })
+  }
+
+  private onKtvMetadata = () => this.correctKtvDrift()
+
+  private waitForKtvGesture() {
+    for (const ev of KTV_GESTURE_EVENTS) {
+      document.addEventListener(ev, this.onKtvGesture, true)
+    }
+  }
+
+  private clearKtvGesture() {
+    for (const ev of KTV_GESTURE_EVENTS) {
+      document.removeEventListener(ev, this.onKtvGesture, true)
+    }
+  }
+
+  private onKtvGesture = () => {
+    this.clearKtvGesture()
+    this.playKtvAtTimeline()
   }
 
   private correctKtvDrift() {
-    if (!this.ktvBgm || !this.ktvStartedAt) return
-    const dur = this.ktvDurationSec()
-    if (dur <= 0) return
-    const web = this.ktvBgm as Phaser.Sound.WebAudioSound
-    if (typeof web.seek !== 'number') return
+    const audio = this.ktvAudio
+    if (!audio || !this.ktvStartedAt || this.ktvDurationSec() <= 0) return
     const expected = this.ktvSeekSeconds()
-    if (Math.abs(expected - web.seek) > 0.85) {
-      web.seek = expected
+    if (Math.abs(expected - audio.currentTime) > 0.85) {
+      audio.currentTime = expected
     }
   }
 
   private onKtvRefocus() {
-    const ctx = (this.sound as Phaser.Sound.WebAudioSoundManager).context
-    if (ctx && ctx.state === 'suspended') void ctx.resume()
-    this.correctKtvDrift()
+    if (this.ktvAudio?.paused && this.ktvStartedAt) {
+      this.playKtvAtTimeline()
+    } else {
+      this.correctKtvDrift()
+    }
   }
 
   private stopKtvMusic() {
-    this.sound.pauseOnBlur = true
     this.game.events.off(Phaser.Core.Events.FOCUS, this.onKtvRefocus, this)
     this.game.events.off(Phaser.Core.Events.VISIBLE, this.onKtvRefocus, this)
-    this.ktvAwaitingSync = false
-    this.ktvFallbackTimer?.remove(false)
-    this.ktvFallbackTimer = null
-    this.ktvResyncTimer?.remove(false)
-    this.ktvResyncTimer = null
-    this.ktvStartedAt = 0
-
-    if (this.ktvBgm) {
-      this.ktvBgm.stop()
-      this.ktvBgm.destroy()
-      this.ktvBgm = null
-    }
-    this.ktvTrackKeys = []
+    this.stopKtvPlayback()
+    this.ktvAudio?.removeEventListener('loadedmetadata', this.onKtvMetadata)
+    this.ktvAudio = null
 
     this.ktvMuteBtn?.destroy()
     this.ktvMuteBtn = null
@@ -1392,11 +1311,8 @@ export class InteriorScene extends Phaser.Scene {
     this.ktvResyncTimer?.remove(false)
     this.ktvResyncTimer = null
     this.ktvStartedAt = 0
-    if (this.ktvBgm) {
-      this.ktvBgm.stop()
-      this.ktvBgm.destroy()
-      this.ktvBgm = null
-    }
+    this.clearKtvGesture()
+    this.ktvAudio?.pause()
   }
 
   private setupInteriorMultiplayer() {
